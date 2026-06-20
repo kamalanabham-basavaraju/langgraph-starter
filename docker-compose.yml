@@ -1,0 +1,13 @@
+services:
+  incident-agent:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      EMPLOYEE_PORTAL_PATH: /workspace/employee-portal
+      ENABLE_GIT_PUSH: "false"
+    volumes:
+      - ${EMPLOYEE_PORTAL_PATH_HOST:?Set EMPLOYEE_PORTAL_PATH_HOST}:/workspace/employee-portal
+    restart: unless-stopped

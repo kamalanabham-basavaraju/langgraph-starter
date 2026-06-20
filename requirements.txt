@@ -1,0 +1,11 @@
+fastapi>=0.115,<1
+langchain>=0.3,<2
+langchain-groq>=0.2,<2
+langgraph>=0.2,<2
+pydantic>=2.9,<3
+python-dotenv>=1,<2
+requests>=2.32,<3
+uvicorn[standard]>=0.30,<1
+
+# Development/test dependencies
+pytest>=8,<9
