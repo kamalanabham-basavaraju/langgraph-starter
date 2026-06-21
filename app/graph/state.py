@@ -24,6 +24,7 @@ class AgentState(TypedDict, total=False):
     project_path: str
     branch_name: str
     enterpro_result: dict[str, Any]
+    enterpro_repair_result: dict[str, Any]
     files_modified: list[str]
     validation: dict[str, Any]
     decision_log_path: str

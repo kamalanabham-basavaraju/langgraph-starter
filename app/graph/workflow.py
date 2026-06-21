@@ -16,6 +16,7 @@ NODE_ORDER = [
     "create_git_branch",
     "execute_enterpro",
     "validate_changes",
+    "repair_validation",
     "update_decision_log",
     "sync_decision_to_parcle",
     "commit_changes",
@@ -30,6 +31,7 @@ CODE_CHANGE_ORDER = [
     "create_git_branch",
     "execute_enterpro",
     "validate_changes",
+    "repair_validation",
     "update_decision_log",
     "sync_decision_to_parcle",
     "commit_changes",
@@ -67,6 +69,3 @@ def create_graph(services: WorkflowServices | None = None):
 
 
 graph = create_graph()
-
-mermaid_code = graph.get_graph().draw_mermaid()
-print(mermaid_code)

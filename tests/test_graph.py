@@ -113,13 +113,13 @@ def test_workflow_has_all_required_nodes():
     assert NODE_ORDER == [
         "receive_incident", "search_parcle", "classify_request", "return_information",
         "analyze_incident", "generate_enterpro_prompt",
-        "create_git_branch", "execute_enterpro", "validate_changes", "update_decision_log",
+        "create_git_branch", "execute_enterpro", "validate_changes", "repair_validation", "update_decision_log",
         "sync_decision_to_parcle", "commit_changes", "push_branch", "create_pull_request",
         "return_summary",
     ]
     assert CODE_CHANGE_ORDER == [
         "analyze_incident", "generate_enterpro_prompt", "create_git_branch", "execute_enterpro",
-        "validate_changes", "update_decision_log", "sync_decision_to_parcle", "commit_changes",
+        "validate_changes", "repair_validation", "update_decision_log", "sync_decision_to_parcle", "commit_changes",
         "push_branch", "create_pull_request", "return_summary",
     ]
 

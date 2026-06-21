@@ -17,12 +17,13 @@ flowchart TD
     E --> F[Create incident branch]
     F --> G[Execute Enter Pro]
     G --> H[Validate changed files and tests]
-    H --> I[Append decision log]
-    I --> J[Sync decision to Parcle]
-    J --> K[Commit locally]
-    K --> M[Push branch]
-    M --> N[Create pull request]
-    N --> O[Return summary]
+    H --> I[Repair validation once if needed]
+    I --> J[Append decision log]
+    J --> K[Sync decision to Parcle]
+    K --> M[Commit locally]
+    M --> N[Push branch]
+    N --> O[Create pull request]
+    O --> P[Return summary]
 ```
 
 Each node is small and dependency-injected. External systems live under `app/integrations`, Pydantic boundary

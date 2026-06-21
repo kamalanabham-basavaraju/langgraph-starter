@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import re
 import shutil
 import subprocess
@@ -46,16 +47,43 @@ class GitClient:
                 + ", ".join(changed)
             )
 
-    def create_incident_branch(self, incident: str, branch_source: str | None = None, now: datetime | None = None) -> str:
+    def create_incident_branch(
+        self,
+        incident: str,
+        branch_source: str | None = None,
+        base_branch: str | None = None,
+        now: datetime | None = None,
+    ) -> str:
         self.ensure_repository()
-        if self.require_clean:
+        changed = self.changed_files()
+        if changed and self.require_clean:
             self.ensure_clean()
+        if base_branch and not changed:
+            self._switch_to_base(base_branch)
         source = branch_source or incident
         slug = re.sub(r"[^a-z0-9]+", "-", source.lower()).strip("-")[:48] or "incident"
         timestamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%d-%H%M%S")
         branch = f"ai/{timestamp}-{slug}"
         self._run("switch", "-c", branch)
         return branch
+
+    def _switch_to_base(self, base_branch: str) -> None:
+        remotes = self._run("remote", check=False).stdout.split()
+        if "origin" in remotes:
+            self._run("fetch", "origin", base_branch, check=False)
+            if self._run("show-ref", "--verify", f"refs/heads/{base_branch}", check=False).returncode != 0:
+                tracked = self._run(
+                    "show-ref", "--verify", f"refs/remotes/origin/{base_branch}", check=False
+                )
+                if tracked.returncode != 0:
+                    return
+                self._run("switch", "-c", base_branch, "--track", f"origin/{base_branch}")
+            else:
+                self._run("switch", base_branch)
+                self._run("pull", "--ff-only", "origin", base_branch, check=False)
+            return
+        if self._run("show-ref", "--verify", f"refs/heads/{base_branch}", check=False).returncode == 0:
+            self._run("switch", base_branch)
 
     def changed_files(self) -> list[str]:
         output = self._run("status", "--porcelain").stdout
@@ -68,8 +96,30 @@ class GitClient:
         self._run("commit", "-m", message)
         return self._run("rev-parse", "HEAD").stdout.strip()
 
-    def push_branch(self, branch_name: str) -> None:
-        self._run("push", "--set-upstream", "origin", branch_name)
+    def push_branch(self, branch_name: str, token: str | None = None) -> None:
+        if not token:
+            self._run("push", "--set-upstream", "origin", branch_name)
+            return
+        auth = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+        try:
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    f"http.https://github.com/.extraheader=AUTHORIZATION: basic {auth}",
+                    "push",
+                    "--set-upstream",
+                    "origin",
+                    branch_name,
+                ],
+                cwd=self.project_path,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            stderr = getattr(exc, "stderr", None) or str(exc)
+            raise GitError(f"git push --set-upstream origin {branch_name} failed: {stderr.strip()}") from exc
 
     def create_pull_request(
         self,

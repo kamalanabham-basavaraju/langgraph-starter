@@ -114,6 +114,36 @@ def _enterpro_failure_context(state: AgentState) -> dict[str, Any]:
     }
 
 
+def _validation_repair_prompt(state: AgentState, project_path: Path) -> str:
+    validation = state.get("validation", {})
+    return f"""The previous automated code edit for this incident failed validation.
+
+Incident:
+{state['incident']}
+
+Target repository:
+{project_path}
+
+Validation command:
+{validation.get('command')}
+
+Exit code:
+{validation.get('exit_code')}
+
+Stdout:
+{validation.get('stdout', '')}
+
+Stderr:
+{validation.get('stderr', '')}
+
+Fix the validation failure directly in the local repository. Prefer using the project's existing dependency stack and
+test patterns. If a new dependency is truly required, update the appropriate dependency manifest in the repository.
+Do not add tests that require unconfigured packages such as SQLAlchemy, pydantic[email], or email-validator unless
+the repository already depends on them or you also update the dependency manifest. Run `git status --short` before
+finishing and leave the working tree with the corrected files modified.
+"""
+
+
 def build_nodes(services: WorkflowServices) -> dict[str, Node]:
     project_path = services.settings.employee_portal_path
     memory_dir = project_path / services.settings.parcle_memory_dir
@@ -182,7 +212,11 @@ def build_nodes(services: WorkflowServices) -> dict[str, Node]:
 
     def create_git_branch(state: AgentState) -> dict[str, Any]:
         branch_source = state.get("root_cause_hypothesis") or state["incident"]
-        return {"branch_name": git.create_incident_branch(state["incident"], branch_source)}
+        return {
+            "branch_name": git.create_incident_branch(
+                state["incident"], branch_source, services.settings.github_base_branch
+            )
+        }
 
     def execute_enterpro(state: AgentState) -> dict[str, Any]:
         prompt = _enterpro_execution_prompt(
@@ -217,8 +251,50 @@ def build_nodes(services: WorkflowServices) -> dict[str, Node]:
         except (OSError, subprocess.TimeoutExpired) as exc:
             validation = {"command": services.settings.validation_command, "passed": False, "error": str(exc)}
         if not validation["passed"]:
-            raise RuntimeError(f"Change validation failed: {validation}")
+            return {"files_modified": files, "validation": validation}
         return {"files_modified": files, "validation": validation}
+
+    def repair_validation(state: AgentState) -> dict[str, Any]:
+        validation = state.get("validation", {})
+        if validation.get("passed"):
+            return {}
+        repair_prompt = _validation_repair_prompt(state, project_path)
+        repair_result = services.enterpro.execute(repair_prompt, project_path)
+        files = git.changed_files()
+        command = shlex.split(services.settings.validation_command, posix=False)
+        try:
+            completed = subprocess.run(
+                command, cwd=project_path, text=True, capture_output=True,
+                timeout=300, check=False,
+            )
+            repaired_validation = {
+                "command": services.settings.validation_command,
+                "passed": completed.returncode == 0,
+                "exit_code": completed.returncode,
+                "stdout": completed.stdout[-4000:],
+                "stderr": completed.stderr[-4000:],
+                "tests_updated": any("test" in Path(name).name.lower() for name in files),
+                "repair_attempted": True,
+            }
+            if completed.returncode == 5 and "no tests ran" in completed.stdout.lower():
+                repaired_validation["passed"] = True
+                repaired_validation["warning"] = "Validation command ran successfully but found no tests."
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            repaired_validation = {
+                "command": services.settings.validation_command,
+                "passed": False,
+                "error": str(exc),
+                "repair_attempted": True,
+            }
+        if not repaired_validation["passed"]:
+            raise RuntimeError(
+                f"Change validation failed after one repair attempt: {repaired_validation}"
+            )
+        return {
+            "files_modified": files,
+            "validation": repaired_validation,
+            "enterpro_repair_result": repair_result,
+        }
 
     def update_decision_log(state: AgentState) -> dict[str, Any]:
         log_path = memory_dir / "agent_decisions.md"
@@ -337,7 +413,9 @@ def build_nodes(services: WorkflowServices) -> dict[str, Node]:
     def push_branch(state: AgentState) -> dict[str, Any]:
         if not services.settings.enable_git_push:
             return {"pull_request_url": None, "push": {"skipped": True, "reason": "ENABLE_GIT_PUSH is false"}}
-        git.push_branch(state["branch_name"])
+        if not services.settings.github_token:
+            raise RuntimeError("GITHUB_TOKEN or GH_TOKEN is required to push branches")
+        git.push_branch(state["branch_name"], services.settings.github_token)
         return {"push": {"skipped": False, "branch_name": state["branch_name"]}}
 
     def create_pull_request(state: AgentState) -> dict[str, Any]:
@@ -386,6 +464,7 @@ def build_nodes(services: WorkflowServices) -> dict[str, Node]:
         "create_git_branch": create_git_branch,
         "execute_enterpro": execute_enterpro,
         "validate_changes": validate_changes,
+        "repair_validation": repair_validation,
         "update_decision_log": update_decision_log,
         "sync_decision_to_parcle": sync_decision_to_parcle,
         "commit_changes": commit_changes,
