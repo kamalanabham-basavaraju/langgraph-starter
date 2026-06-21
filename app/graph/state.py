@@ -9,6 +9,9 @@ class AgentState(TypedDict, total=False):
     incident: str
     run_id: str
     started_at: str
+    request_kind: str
+    classification_reasoning: str
+    information_answer: str
     parcle_documents: list[dict[str, Any]]
     memory_references: list[str]
     root_cause_hypothesis: str

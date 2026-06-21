@@ -6,14 +6,14 @@ from app.services.parcle_ingestion import EMPLOYEE_PORTAL_MEMORY_FILES, ParcleIn
 
 
 class RecordingParcle:
-    memory_location = "https://parcle.example/api namespace:employee-portal"
+    memory_location = "parcle-sdk user:system_user"
 
     def __init__(self):
-        self.documents = []
+        self.files = []
 
-    def upsert_documents(self, documents):
-        self.documents = documents
-        return {"location": self.memory_location, "documents_submitted": len(documents)}
+    def ingest_files(self, files):
+        self.files = files
+        return {"location": self.memory_location, "files_submitted": len(files)}
 
 
 def test_ingests_exact_employee_portal_memory_files(tmp_path: Path):
@@ -23,10 +23,10 @@ def test_ingests_exact_employee_portal_memory_files(tmp_path: Path):
 
     result = ParcleIngestionService(parcle, tmp_path).ingest()  # type: ignore[arg-type]
 
-    assert result["documents_submitted"] == 3
-    assert [document.reference for document in parcle.documents] == list(EMPLOYEE_PORTAL_MEMORY_FILES)
-    assert parcle.documents[0].id == "employee-portal:api_documentation.md"
-    assert len(parcle.documents[0].metadata["sha256"]) == 64
+    assert result["files_submitted"] == 3
+    assert [path.name for path in parcle.files] == list(EMPLOYEE_PORTAL_MEMORY_FILES)
+    assert list(result["checksums"]) == list(EMPLOYEE_PORTAL_MEMORY_FILES)
+    assert len(result["checksums"]["API_DOCUMENTATION.md"]) == 64
 
 
 def test_ingestion_reports_all_missing_required_files(tmp_path: Path):
@@ -43,4 +43,4 @@ def test_dry_run_does_not_write_to_parcle(tmp_path: Path):
 
     assert result["dry_run"] is True
     assert result["documents_submitted"] == 0
-    assert parcle.documents == []
+    assert parcle.files == []

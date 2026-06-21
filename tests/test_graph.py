@@ -4,22 +4,34 @@ import subprocess
 from pathlib import Path
 
 from app.config import Settings
-from app.graph.workflow import NODE_ORDER, create_graph
-from app.models.incident import IncidentAnalysis, ParcleDocument
+from app.graph.workflow import CODE_CHANGE_ORDER, NODE_ORDER, create_graph
+from app.models.incident import IncidentAnalysis, ParcleDocument, RequestClassification
+from app.nodes.incident import _enterpro_execution_prompt
 from app.services.container import WorkflowServices
 
 
 class FakeParcle:
     def search(self, query: str, limit: int = 8) -> list[ParcleDocument]:
-        assert "profile" in query
         return [ParcleDocument(title="Profile API", content="Validation changed", reference="docs/profile.md")]
 
-    def upsert_documents(self, documents):
+    def ingest_documents(self, documents):
         assert documents[0].metadata["content_type"] == "incident_decision"
         return {"location": "test-memory", "documents_submitted": len(documents)}
 
 
 class FakeGroq:
+    def classify_request(self, request: str, documents: list[ParcleDocument]) -> RequestClassification:
+        if request.lower().startswith("what is"):
+            return RequestClassification(
+                request_kind="information",
+                reasoning="The user asked a read-only repo question.",
+                answer="This repository contains an Employee Tracker service.",
+            )
+        return RequestClassification(
+            request_kind="code_change",
+            reasoning="The user described a behavior that needs remediation.",
+        )
+
     def analyze(self, incident: str, documents: list[ParcleDocument]) -> IncidentAnalysis:
         return IncidentAnalysis(
             root_cause_hypothesis="Profile validation mismatch",
@@ -43,6 +55,11 @@ class FakeEnterPro:
         return {"status": "completed"}
 
 
+class FailingEnterPro:
+    def execute(self, prompt: str, project_path: Path) -> dict[str, object]:
+        raise AssertionError("Enter Pro should not be called for informational requests")
+
+
 def _run(path: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=path, check=True, text=True, capture_output=True).stdout.strip()
 
@@ -58,13 +75,12 @@ def test_complete_graph_creates_local_branch_and_commit(tmp_path: Path):
     config = Settings(
         groq_api_key=None,
         groq_model="test",
-        parcle_base_url=None,
-        parcle_search_path="/search",
-        parcle_upsert_path="/documents/upsert",
         parcle_api_key=None,
-        parcle_namespace="employee-portal",
+        parcle_user_id="system_user",
         enterpro_url=None,
         enterpro_api_key=None,
+        enterpro_command=None,
+        enterpro_workspace_id=None,
         employee_portal_path=tmp_path,
         external_request_timeout=1,
         validation_command="git status --short",
@@ -86,7 +102,50 @@ def test_complete_graph_creates_local_branch_and_commit(tmp_path: Path):
 
 def test_workflow_has_all_required_nodes():
     assert NODE_ORDER == [
-        "receive_incident", "search_parcle", "analyze_incident", "generate_enterpro_prompt",
+        "receive_incident", "search_parcle", "classify_request", "return_information",
+        "analyze_incident", "generate_enterpro_prompt",
         "create_git_branch", "execute_enterpro", "validate_changes", "update_decision_log",
         "sync_decision_to_parcle", "commit_changes", "return_summary",
     ]
+    assert CODE_CHANGE_ORDER == [
+        "analyze_incident", "generate_enterpro_prompt", "create_git_branch", "execute_enterpro",
+        "validate_changes", "update_decision_log", "sync_decision_to_parcle", "commit_changes",
+        "return_summary",
+    ]
+
+
+def test_enterpro_prompt_requires_local_working_tree_changes(tmp_path: Path):
+    prompt = _enterpro_execution_prompt("Fix the profile validation bug.", tmp_path)
+
+    assert str(tmp_path) in prompt
+    assert "Apply the remediation directly to files" in prompt
+    assert "git status --short" in prompt
+
+
+def test_informational_request_skips_enter_and_git(tmp_path: Path):
+    config = Settings(
+        groq_api_key=None,
+        groq_model="test",
+        parcle_api_key=None,
+        parcle_user_id="system_user",
+        enterpro_url=None,
+        enterpro_api_key=None,
+        enterpro_command=None,
+        enterpro_workspace_id=None,
+        employee_portal_path=tmp_path,
+        external_request_timeout=1,
+        validation_command="git status --short",
+        enable_git_push=False,
+        log_level="INFO",
+    )
+    services = WorkflowServices(FakeParcle(), FakeGroq(), FailingEnterPro(), config)  # type: ignore[arg-type]
+
+    result = create_graph(services).invoke({"incident": "What is this repo about?"})
+
+    assert result["branch_name"] == ""
+    assert result["commit_hash"] == ""
+    assert result["files_modified"] == []
+    assert result["documentation_updated"] is False
+    assert result["validation"]["reason"] == "informational_request"
+    assert result["validation"]["classification_reasoning"] == "The user asked a read-only repo question."
+    assert "Employee Tracker service" in result["summary"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import subprocess
 from datetime import datetime, timezone
@@ -10,7 +11,7 @@ from uuid import uuid4
 
 from app.graph.state import AgentState
 from app.integrations.git import GitClient
-from app.models.incident import IncidentAnalysis, ParcleDocument, ParcleMemoryDocument
+from app.models.incident import IncidentAnalysis, ParcleDocument, ParcleMemoryDocument, RequestClassification
 from app.services.container import WorkflowServices
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,94 @@ def _utc_now() -> datetime:
 
 def _documents(state: AgentState) -> list[ParcleDocument]:
     return [ParcleDocument.model_validate(item) for item in state.get("parcle_documents", [])]
+
+
+CODE_CHANGE_TERMS = {
+    "fix",
+    "change",
+    "modify",
+    "update",
+    "implement",
+    "add",
+    "remove",
+    "refactor",
+    "bug",
+    "error",
+    "failing",
+    "failure",
+    "incident",
+    "broken",
+    "cannot",
+    "can't",
+    "not working",
+    "test",
+    "patch",
+    "remediate",
+    "resolve",
+}
+
+INFORMATION_PATTERNS = (
+    r"\bwhat\s+is\b",
+    r"\bwhat'?s\b",
+    r"\bexplain\b",
+    r"\bdescribe\b",
+    r"\btell\s+me\b",
+    r"\bhow\s+does\b",
+    r"\boverview\b",
+    r"\babout\b",
+    r"\breadme\b",
+)
+
+
+def _requires_code_change(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    if any(term in normalized for term in CODE_CHANGE_TERMS):
+        return True
+    return not any(re.search(pattern, normalized) for pattern in INFORMATION_PATTERNS)
+
+
+def _information_summary(state: AgentState) -> str:
+    answer = state.get("information_answer", "").strip()
+    if answer:
+        return answer
+    documents = _documents(state)
+    if not documents:
+        return (
+            "This looks like an informational repo question, so I skipped code editing. "
+            "Parcle did not return enough repository memory to answer it confidently."
+        )
+    answer = documents[0].content.strip()
+    if not answer:
+        answer = "Parcle returned a matching memory item, but it did not include answer text."
+    references = [document.reference for document in documents if document.reference]
+    suffix = f" References: {', '.join(references)}." if references else ""
+    return f"{answer}{suffix}"
+
+
+def _enterpro_execution_prompt(prompt: str, project_path: Path) -> str:
+    return f"""{prompt}
+
+Execution Context:
+- You are running from the target local Git repository at `{project_path}`.
+- Inspect the current working tree before editing.
+- Apply the remediation directly to files in this local repository. Do not only explain a plan.
+- Add or update regression tests when the repository has a test structure.
+- Update relevant project documentation when behavior changes.
+- Do not push, publish, deploy, or open a pull request.
+- Before finishing, run `git status --short` and ensure at least one file is modified in this working tree.
+- If you believe no code change is safe, still write a short investigation note to `docs/agent_decisions.md` explaining why no automated code change was made.
+"""
+
+
+def _enterpro_failure_context(state: AgentState) -> dict[str, Any]:
+    result = state.get("enterpro_result") or {}
+    return {
+        "command": result.get("command"),
+        "exit_code": result.get("exit_code"),
+        "stdout": str(result.get("stdout", ""))[-4000:],
+        "stderr": str(result.get("stderr", ""))[-4000:],
+        "json": result.get("json"),
+    }
 
 
 def build_nodes(services: WorkflowServices) -> dict[str, Node]:
@@ -49,6 +138,38 @@ def build_nodes(services: WorkflowServices) -> dict[str, Node]:
             "memory_references": [document.reference for document in documents if document.reference],
         }
 
+    def classify_request(state: AgentState) -> dict[str, Any]:
+        classifier = getattr(services.groq, "classify_request", None)
+        if callable(classifier):
+            classification = classifier(state["incident"], _documents(state))
+            classification = RequestClassification.model_validate(classification)
+            return {
+                "request_kind": classification.request_kind,
+                "classification_reasoning": classification.reasoning,
+                "information_answer": classification.answer,
+            }
+        request_kind = "code_change" if _requires_code_change(state["incident"]) else "information"
+        return {
+            "request_kind": request_kind,
+            "classification_reasoning": "Fallback heuristic classifier used.",
+            "information_answer": "",
+        }
+
+    def return_information(state: AgentState) -> dict[str, Any]:
+        return {
+            "branch_name": "",
+            "files_modified": [],
+            "documentation_updated": False,
+            "commit_hash": "",
+            "summary": _information_summary(state),
+            "validation": {
+                "skipped": True,
+                "reason": "informational_request",
+                "classification_reasoning": state.get("classification_reasoning", ""),
+                "memory_references": state.get("memory_references", []),
+            },
+        }
+
     def analyze_incident(state: AgentState) -> dict[str, Any]:
         analysis = services.groq.analyze(state["incident"], _documents(state))
         return analysis.model_dump()
@@ -62,13 +183,16 @@ def build_nodes(services: WorkflowServices) -> dict[str, Node]:
         return {"branch_name": git.create_incident_branch(state["incident"])}
 
     def execute_enterpro(state: AgentState) -> dict[str, Any]:
-        result = services.enterpro.execute(state["enterpro_prompt"], project_path)
+        prompt = _enterpro_execution_prompt(state["enterpro_prompt"], project_path)
+        result = services.enterpro.execute(prompt, project_path)
         return {"enterpro_result": result}
 
     def validate_changes(state: AgentState) -> dict[str, Any]:
         files = git.changed_files()
         if not files:
-            raise RuntimeError("Enter Pro completed without modifying any files")
+            raise RuntimeError(
+                f"Enter Pro completed without modifying any files: {_enterpro_failure_context(state)}"
+            )
         command = shlex.split(services.settings.validation_command, posix=False)
         try:
             completed = subprocess.run(
@@ -93,7 +217,7 @@ def build_nodes(services: WorkflowServices) -> dict[str, Node]:
         log_path = project_path / "docs" / "agent_decisions.md"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         references = state.get("memory_references") or ["No Parcle documentation found"]
-        file_reasons = "\n".join(f"* `{name}` — changed by Enter Pro to implement or verify the remediation." for name in state["files_modified"])
+        file_reasons = "\n".join(f"* `{name}` - changed by Enter Pro to implement or verify the remediation." for name in state["files_modified"])
         entry = f"""
 ## {_utc_now().strftime('%Y-%m-%d %H:%M UTC')}
 
@@ -133,7 +257,7 @@ def build_nodes(services: WorkflowServices) -> dict[str, Node]:
     def sync_decision_to_parcle(state: AgentState) -> dict[str, Any]:
         document = ParcleMemoryDocument(
             id=f"employee-portal:incident:{state['run_id']}",
-            title=f"Incident decision — {state['incident'][:120]}",
+            title=f"Incident decision - {state['incident'][:120]}",
             content=state["decision_entry"],
             reference=state["decision_log_path"],
             metadata={
@@ -145,7 +269,7 @@ def build_nodes(services: WorkflowServices) -> dict[str, Node]:
                 "recorded_at": _utc_now().isoformat(),
             },
         )
-        return {"parcle_decision_sync": services.parcle.upsert_documents([document])}
+        return {"parcle_decision_sync": services.parcle.ingest_documents([document])}
 
     def commit_changes(state: AgentState) -> dict[str, Any]:
         summary = " ".join(state["incident"].split())[:72]
@@ -163,6 +287,8 @@ def build_nodes(services: WorkflowServices) -> dict[str, Node]:
     return {
         "receive_incident": receive_incident,
         "search_parcle": search_parcle,
+        "classify_request": classify_request,
+        "return_information": return_information,
         "analyze_incident": analyze_incident,
         "generate_enterpro_prompt": generate_enterpro_prompt,
         "create_git_branch": create_git_branch,

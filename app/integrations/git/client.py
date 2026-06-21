@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,12 +16,19 @@ class GitClient:
         self.project_path = project_path
 
     def _run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        if shutil.which("git") is None:
+            raise GitError("git executable is not installed or not available on PATH")
         try:
             return subprocess.run(
                 ["git", *args], cwd=self.project_path, text=True, capture_output=True, check=check
             )
         except (OSError, subprocess.CalledProcessError) as exc:
             stderr = getattr(exc, "stderr", None) or str(exc)
+            if "dubious ownership" in stderr and "safe.directory" in stderr:
+                raise GitError(
+                    f"git {' '.join(args)} failed because Git does not trust {self.project_path}. "
+                    f"Run `git config --global --add safe.directory {self.project_path}` in the runtime environment."
+                ) from exc
             raise GitError(f"git {' '.join(args)} failed: {stderr.strip()}") from exc
 
     def ensure_repository(self) -> None:
