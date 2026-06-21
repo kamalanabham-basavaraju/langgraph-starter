@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel, Field
+from typing import Literal
 
 
 class IncidentRequest(BaseModel):
@@ -31,6 +32,12 @@ class IncidentAnalysis(BaseModel):
     remediation_strategy: list[str] = Field(default_factory=list)
     hypothesis_reasoning: str
     files_likely_affected: list[str] = Field(default_factory=list)
+
+
+class RequestClassification(BaseModel):
+    request_kind: Literal["information", "code_change"]
+    reasoning: str
+    answer: str = ""
 
 
 class IncidentResponse(BaseModel):

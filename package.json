@@ -1,0 +1,29 @@
+{
+  "name": "langgraph-starter",
+  "version": "1.0.0",
+  "description": "A FastAPI and LangGraph service that turns a production incident into a documented, tested, locally committed\r remediation in an existing Employee Portal repository. It searches Parcle memory, uses Groq for evidence-based\r analysis and implementation planning, delegates the edit to Enter Pro, validates the result, and records an audit trail.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kamalanabham-basavaraju/langgraph-starter.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/kamalanabham-basavaraju/langgraph-starter/issues"
+  },
+  "homepage": "https://github.com/kamalanabham-basavaraju/langgraph-starter#readme",
+  "dependencies": {
+    "@enter-pro/enter-cli": "^0.4.0",
+    "@enter-pro/enter-code": "^1.0.12"
+  }
+}

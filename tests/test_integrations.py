@@ -1,34 +1,69 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 from app.integrations.parcle.client import ParcleClient
 from app.models.incident import ParcleMemoryDocument
 
 
-def test_parcle_normalizes_common_response_fields():
-    document = ParcleClient._normalize(
-        {"name": "Runbook", "snippet": "Restart the worker", "url": "docs/runbook", "metadata": {"team": "ops"}}
-    )
-    assert document.title == "Runbook"
-    assert document.content == "Restart the worker"
-    assert document.reference == "docs/runbook"
-    assert document.metadata == {"team": "ops"}
+class RecordingParcleSdk:
+    def __init__(self):
+        self.users = []
+        self.files = []
+        self.dialogs = []
+
+    def create_user(self, user_id):
+        self.users.append(user_id)
+
+    def ingest_file(self, user_id, file):
+        self.files.append((user_id, file))
+        return {"file_id": Path(file).name}
+
+    def ingest_dialog(self, user_id, messages):
+        self.dialogs.append((user_id, messages))
+        return SimpleNamespace(session_id="session-1")
+
+    def search(self, user_id, query):
+        return SimpleNamespace(
+            answer="Restart the worker",
+            confidence=0.91,
+            citations=[SimpleNamespace(type="file", id="README.md")],
+        )
 
 
-def test_parcle_upsert_uses_configured_namespace(monkeypatch):
-    client = ParcleClient(
-        "https://parcle.example/api", "/search", "/documents/upsert", "secret",
-        "employee-portal", 10,
-    )
-    captured = {}
+def test_parcle_search_uses_system_user_and_normalizes_sdk_result():
+    sdk = RecordingParcleSdk()
+    client = ParcleClient(api_key="secret", user_id="system_user", sdk_client=sdk)
 
-    def fake_post(path, payload, operation):
-        captured.update({"path": path, "payload": payload, "operation": operation})
-        return {"status": "ok"}
+    documents = client.search("worker down")
 
-    monkeypatch.setattr(client, "_post", fake_post)
-    result = client.upsert_documents([
-        ParcleMemoryDocument(id="doc:1", title="Doc", content="Text", reference="README.md")
+    assert sdk.users == ["system_user"]
+    assert documents[0].title == "Parcle memory answer"
+    assert documents[0].content == "Restart the worker"
+    assert documents[0].reference == "file:README.md"
+    assert documents[0].metadata["confidence"] == 0.91
+
+
+def test_parcle_ingests_files_with_configured_user(tmp_path):
+    sdk = RecordingParcleSdk()
+    client = ParcleClient(api_key="secret", user_id="system_user", sdk_client=sdk)
+    readme = tmp_path / "README.md"
+    readme.write_text("docs", encoding="utf-8")
+
+    result = client.ingest_files([readme])
+
+    assert sdk.files == [("system_user", str(readme))]
+    assert result["location"] == "parcle-sdk user:system_user"
+    assert result["files_submitted"] == 1
+
+
+def test_parcle_stores_generated_documents_as_dialog_memory():
+    sdk = RecordingParcleSdk()
+    client = ParcleClient(api_key="secret", user_id="system_user", sdk_client=sdk)
+
+    result = client.ingest_documents([
+        ParcleMemoryDocument(id="doc:1", title="Decision", content="Fixed validation", reference="docs/log.md")
     ])
 
-    assert captured["path"] == "/documents/upsert"
-    assert captured["payload"]["namespace"] == "employee-portal"
-    assert captured["payload"]["documents"][0]["id"] == "doc:1"
-    assert result["location"] == "https://parcle.example/api namespace:employee-portal"
+    assert result["documents_submitted"] == 1
+    assert sdk.dialogs[0][0] == "system_user"
+    assert sdk.dialogs[0][1][1]["content"] == "Fixed validation"

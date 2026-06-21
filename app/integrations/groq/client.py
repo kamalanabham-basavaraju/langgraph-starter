@@ -4,8 +4,12 @@ import logging
 
 from langchain_groq import ChatGroq
 
-from app.models.incident import IncidentAnalysis, ParcleDocument
-from app.prompts.incident import ANALYSIS_SYSTEM_PROMPT, ENTERPRO_SYSTEM_PROMPT
+from app.models.incident import IncidentAnalysis, ParcleDocument, RequestClassification
+from app.prompts.incident import (
+    ANALYSIS_SYSTEM_PROMPT,
+    ENTERPRO_SYSTEM_PROMPT,
+    REQUEST_CLASSIFICATION_SYSTEM_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +28,34 @@ class GroqIncidentAnalyzer:
             raise GroqIntegrationError("GROQ_API_KEY is not configured")
         return ChatGroq(api_key=self.api_key, model=self.model, temperature=0)
 
-    def analyze(self, incident: str, documents: list[ParcleDocument]) -> IncidentAnalysis:
-        context = "\n\n".join(
+    @staticmethod
+    def _context(documents: list[ParcleDocument], empty_message: str) -> str:
+        return "\n\n".join(
             f"[{doc.title}] ({doc.reference or 'no reference'})\n{doc.content}" for doc in documents
-        ) or "No documentation was returned by Parcle. Clearly account for this uncertainty."
+        ) or empty_message
+
+    def classify_request(self, request: str, documents: list[ParcleDocument]) -> RequestClassification:
+        context = self._context(
+            documents,
+            "No documentation was returned by Parcle. Classify conservatively from the user request.",
+        )
+        try:
+            structured_llm = self._llm().with_structured_output(RequestClassification)
+            return structured_llm.invoke(
+                [
+                    ("system", REQUEST_CLASSIFICATION_SYSTEM_PROMPT),
+                    ("human", f"User request:\n{request}\n\nParcle memory:\n{context}"),
+                ]
+            )
+        except Exception as exc:
+            logger.exception("Groq request classification failed")
+            raise GroqIntegrationError(f"Groq request classification failed: {exc}") from exc
+
+    def analyze(self, incident: str, documents: list[ParcleDocument]) -> IncidentAnalysis:
+        context = self._context(
+            documents,
+            "No documentation was returned by Parcle. Clearly account for this uncertainty.",
+        )
         try:
             structured_llm = self._llm().with_structured_output(IncidentAnalysis)
             return structured_llm.invoke(
@@ -41,6 +69,7 @@ class GroqIncidentAnalyzer:
         self, incident: str, analysis: IncidentAnalysis, documents: list[ParcleDocument]
     ) -> str:
         references = ", ".join(filter(None, (doc.reference for doc in documents))) or "None"
+        context = self._context(documents, "No Parcle memory answer was returned.")
         try:
             response = self._llm().invoke(
                 [
@@ -48,7 +77,7 @@ class GroqIncidentAnalyzer:
                     (
                         "human",
                         f"Incident: {incident}\nAnalysis: {analysis.model_dump_json(indent=2)}\n"
-                        f"Documentation references: {references}",
+                        f"Documentation references: {references}\nDocumentation evidence:\n{context}",
                     ),
                 ]
             )

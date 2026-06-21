@@ -21,13 +21,12 @@ def _as_bool(value: str | None, default: bool = False) -> bool:
 class Settings:
     groq_api_key: str | None
     groq_model: str
-    parcle_base_url: str | None
-    parcle_search_path: str
-    parcle_upsert_path: str
     parcle_api_key: str | None
-    parcle_namespace: str
+    parcle_user_id: str
     enterpro_url: str | None
     enterpro_api_key: str | None
+    enterpro_command: str | None
+    enterpro_workspace_id: str | None
     employee_portal_path: Path
     external_request_timeout: float
     validation_command: str
@@ -39,13 +38,12 @@ class Settings:
         return cls(
             groq_api_key=os.getenv("GROQ_API_KEY"),
             groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-            parcle_base_url=os.getenv("PARCLE_BASE_URL"),
-            parcle_search_path=os.getenv("PARCLE_SEARCH_PATH", "/search"),
-            parcle_upsert_path=os.getenv("PARCLE_UPSERT_PATH", "/documents/upsert"),
             parcle_api_key=os.getenv("PARCLE_API_KEY"),
-            parcle_namespace=os.getenv("PARCLE_NAMESPACE", "employee-portal"),
+            parcle_user_id=os.getenv("PARCLE_USER_ID", "system_user"),
             enterpro_url=os.getenv("ENTERPRO_URL") or os.getenv("ENTER_PRO_URL"),
             enterpro_api_key=os.getenv("ENTERPRO_API_KEY"),
+            enterpro_command=os.getenv("ENTERPRO_COMMAND"),
+            enterpro_workspace_id=os.getenv("ENTERPRO_WORKSPACE_ID"),
             employee_portal_path=Path(os.getenv("EMPLOYEE_PORTAL_PATH", ".")).resolve(),
             external_request_timeout=float(os.getenv("EXTERNAL_REQUEST_TIMEOUT", "60")),
             validation_command=os.getenv("VALIDATION_COMMAND", "pytest -q"),

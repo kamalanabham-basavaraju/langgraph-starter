@@ -7,6 +7,8 @@ graph TD;
     __start__([start]):::first
     receive_incident(receive_incident)
     search_parcle(search_parcle)
+    classify_request(classify_request)
+    return_information(return_information)
     analyze_incident(analyze_incident)
     generate_enterpro_prompt(generate_enterpro_prompt)
     create_git_branch(create_git_branch)
@@ -19,7 +21,10 @@ graph TD;
     __end__([end]):::last
     __start__ --> receive_incident;
     receive_incident --> search_parcle;
-    search_parcle --> analyze_incident;
+    search_parcle --> classify_request;
+    classify_request -- information --> return_information;
+    return_information --> __end__;
+    classify_request -- code_change --> analyze_incident;
     analyze_incident --> generate_enterpro_prompt;
     generate_enterpro_prompt --> create_git_branch;
     create_git_branch --> execute_enterpro;
